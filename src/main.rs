@@ -12,6 +12,8 @@ enum Message {
     SetNumberToCheck(String),
     CheckNumber,
     UpdateFoundValue,
+    SetWriteInput(String),
+    Write,
     Reset,
 }
 
@@ -27,6 +29,7 @@ enum AppState {
     GotAddress {
         addr: FoundAddress,
         current_value: i32,
+        input: String,
     },
     Failed(String),
 }
@@ -92,6 +95,7 @@ impl AppState {
                         *self = Self::GotAddress {
                             addr: found,
                             current_value: cur,
+                            input: String::new(),
                         };
                     }
                 }
@@ -100,11 +104,39 @@ impl AppState {
                 Self::GotAddress {
                     addr,
                     current_value,
+                    input: _,
                 },
                 Message::UpdateFoundValue,
             ) => {
                 *current_value = addr.read();
             }
+            (
+                Self::GotAddress {
+                    addr: _,
+                    current_value: _,
+                    input,
+                },
+                Message::SetWriteInput(new_input),
+            ) => {
+                *input = new_input;
+            }
+
+            (
+                Self::GotAddress {
+                    addr,
+                    current_value: _,
+                    input,
+                },
+                Message::Write,
+            ) => {
+                let Ok(value) = input.parse::<i32>() else {
+                    return;
+                };
+
+                addr.write(value);
+                input.clear();
+            }
+
             _ => {}
         }
     }
@@ -140,10 +172,17 @@ impl AppState {
             Self::GotAddress {
                 addr: _,
                 current_value,
+                input,
             } => widget::column![
                 widget::text("Found!"),
-                widget::text(format!("Current value: {current_value}")),
-                widget::button("Update").on_press(Message::UpdateFoundValue)
+                widget::row![
+                    widget::text(format!("Current value: {current_value}")),
+                    widget::button("Update").on_press(Message::UpdateFoundValue),
+                ],
+                widget::row![
+                    widget::text_input("Set value...", &input).on_input(Message::SetWriteInput),
+                    widget::button("Write value").on_press(Message::Write)
+                ],
             ],
         })
         .into()
@@ -152,7 +191,7 @@ impl AppState {
 
 fn main() -> iced::Result {
     iced::application(AppState::default, AppState::update, AppState::view)
-        .title("infinite iron!!!")
+        .title("memory zonkler")
         .window_size((300, 200))
         .run()
 }

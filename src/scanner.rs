@@ -2,12 +2,14 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use std::ffi::c_void;
 use std::io::Cursor;
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
 use windows::Win32::System::Memory::{
     MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READWRITE, PAGE_READWRITE, VirtualQueryEx,
 };
 use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-use windows::Win32::System::Threading::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+use windows::Win32::System::Threading::{
+    PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
+};
 
 pub struct MemoryRegion {
     base_address: Address,
@@ -126,7 +128,7 @@ fn scan_regions(regions: &[MemoryRegion], check: i32) -> Vec<Address> {
 fn pid_to_handle(pid: u32) -> HANDLE {
     let process = unsafe {
         windows::Win32::System::Threading::OpenProcess(
-            PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
+            PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION,
             false,
             pid,
         )
@@ -161,6 +163,20 @@ impl FoundAddress {
         }
 
         value
+    }
+
+    pub fn write(&self, val: i32) {
+        let buf = val.to_le_bytes();
+        unsafe {
+            WriteProcessMemory(
+                self.process,
+                self.address as *const c_void,
+                buf.as_ptr() as *const c_void,
+                size_of::<i32>(),
+                None,
+            )
+            .unwrap();
+        }
     }
 }
 
