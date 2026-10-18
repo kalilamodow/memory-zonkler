@@ -1,7 +1,7 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::ffi::c_void;
 use std::io;
-use std::io::{Cursor, Seek};
+use std::io::Cursor;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Memory::{
@@ -15,7 +15,7 @@ fn process_handle() -> HANDLE {
         windows::Win32::System::Threading::OpenProcess(
             PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
             false,
-            16516,
+            33144,
         )
         .expect("could not open process")
     };
@@ -98,9 +98,7 @@ fn read_regions(process_handle: HANDLE) -> Vec<MemoryRegion> {
             continue;
         }
 
-        if let Ok(memory) =
-            read_process_memory(process_handle, current_address, mem_info.RegionSize)
-        {
+        if let Ok(memory) = read_process_memory(process_handle, base, mem_info.RegionSize) {
             regions.push(MemoryRegion {
                 base_address: current_address,
                 contents: memory,
@@ -121,16 +119,39 @@ fn scan_regions(regions: &[MemoryRegion], check: i32) -> Vec<Address> {
     for region in regions {
         let mut cursor = Cursor::new(&region.contents);
         while let Ok(number) = cursor.read_i32::<LittleEndian>() {
+            let index = cursor.position() - 4;
             if number == check {
-                result.push(region.base_address + cursor.position() as usize);
+                result.push(region.base_address + index as usize);
             }
 
             // because read_i32 moves forward by 4 bytes
-            cursor.seek_relative(-3).unwrap();
+            cursor.set_position(index + 1);
         }
     }
 
     result
+}
+
+fn read_value_from_process(process_handle: HANDLE, address: Address) -> i32 {
+    let mut value = 0i32;
+
+    unsafe {
+        ReadProcessMemory(
+            process_handle,
+            address as *const c_void,
+            &mut value as *mut i32 as *mut c_void,
+            size_of::<i32>(),
+            None,
+        )
+        .unwrap();
+    }
+
+    value
+}
+
+fn wait_for_enter_key() {
+    let mut buf = String::with_capacity(2);
+    let _ = io::stdin().read_line(&mut buf);
 }
 
 struct MemoryRegion {
@@ -150,10 +171,7 @@ fn main() {
             possible_addresses.as_ref().map(Vec::len)
         );
         println!("set counter to {check}, then press enter");
-        {
-            let mut buf = String::with_capacity(2);
-            let _ = io::stdin().read_line(&mut buf);
-        }
+        wait_for_enter_key();
 
         let regions = read_regions(handle);
         let found = scan_regions(&regions, check);
@@ -175,5 +193,13 @@ fn main() {
     }
 
     let address = possible_addresses.unwrap()[0];
-    println!("address: {address}");
+    println!("found address: {address}!");
+
+    loop {
+        let value = read_value_from_process(handle, address);
+        println!("value is {value}!");
+
+        println!("press enter to recheck...");
+        wait_for_enter_key();
+    }
 }
