@@ -7,6 +7,7 @@ use windows::Win32::System::Memory::{
     MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READWRITE, PAGE_READWRITE, VirtualQueryEx,
 };
 use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+use windows::Win32::System::Threading::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 
 pub struct MemoryRegion {
     base_address: Address,
@@ -121,6 +122,20 @@ fn scan_regions(regions: &[MemoryRegion], check: i32) -> Vec<Address> {
 
     result
 }
+
+fn pid_to_handle(pid: u32) -> HANDLE {
+    let process = unsafe {
+        windows::Win32::System::Threading::OpenProcess(
+            PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
+            false,
+            pid,
+        )
+        .expect("could not open process")
+    };
+
+    process
+}
+
 pub struct FoundAddress {
     address: Address,
     process: HANDLE,
@@ -161,9 +176,9 @@ pub struct Scanner {
 }
 
 impl Scanner {
-    pub fn new(process_handle: HANDLE) -> Self {
+    pub fn new(pid: u32) -> Self {
         Self {
-            process_handle,
+            process_handle: pid_to_handle(pid),
             possible_addresses: None,
         }
     }

@@ -1,31 +1,28 @@
 mod scanner;
 
-use std::io;
-use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::Threading::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 use crate::scanner::{ScanResult, Scanner};
+use std::io;
+use sysinfo::System;
 
-fn process_handle() -> HANDLE {
-    let process = unsafe {
-        windows::Win32::System::Threading::OpenProcess(
-            PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
-            false,
-            29196,
-        )
-            .expect("could not open process")
-    };
-
-    process
-}
 fn wait_for_enter_key() {
     let mut buf = String::with_capacity(2);
     let _ = io::stdin().read_line(&mut buf);
 }
 
+const PROCESS_NAME: &str = "test.exe";
+
 fn main() {
-    let handle = process_handle();
+    let pid = {
+        let info = System::new_all();
+        let mut pid: Option<u32> = None;
+        for process in info.processes_by_name(PROCESS_NAME.as_ref()) {
+            pid = Some(process.pid().as_u32());
+        }
+        pid.expect("could not find target process")
+    };
+
     let mut checks = [50, 49, 52, 48, 40, 60].iter();
-    let mut scanner = Scanner::new(handle);
+    let mut scanner = Scanner::new(pid);
 
     let found = loop {
         let check = *checks.next().expect("ran out of checks");
