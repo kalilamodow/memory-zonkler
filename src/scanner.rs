@@ -1,4 +1,5 @@
 use byteorder::{LittleEndian, ReadBytesExt};
+use rayon::prelude::*;
 use std::ffi::c_void;
 use std::io::Cursor;
 use windows::Win32::Foundation::HANDLE;
@@ -106,23 +107,28 @@ fn read_regions(process_handle: HANDLE) -> Vec<MemoryRegion> {
     regions
 }
 
-fn scan_regions(regions: &[MemoryRegion], check: i32) -> Vec<Address> {
-    let mut result = vec![];
+fn scan_regions(regions: Vec<MemoryRegion>, check: i32) -> Vec<Address> {
+    regions
+        .par_iter()
+        .enumerate()
+        .map(|(index, region)| {
+            let mut result = vec![];
+            let mut cursor = Cursor::new(&region.contents);
+            while let Ok(number) = cursor.read_i32::<LittleEndian>() {
+                let index = cursor.position() - 4;
+                if number == check {
+                    result.push(region.base_address + index as usize);
+                }
 
-    for region in regions {
-        let mut cursor = Cursor::new(&region.contents);
-        while let Ok(number) = cursor.read_i32::<LittleEndian>() {
-            let index = cursor.position() - 4;
-            if number == check {
-                result.push(region.base_address + index as usize);
+                // because read_i32 moves forward by 4 bytes
+                cursor.set_position(index + 1);
             }
 
-            // because read_i32 moves forward by 4 bytes
-            cursor.set_position(index + 1);
-        }
-    }
-
-    result
+            println!("finished {index}");
+            result
+        })
+        .collect::<Vec<Vec<_>>>()
+        .concat()
 }
 
 fn pid_to_handle(pid: u32) -> HANDLE {
@@ -201,7 +207,7 @@ impl Scanner {
 
     pub fn check(&mut self, number: i32) -> ScanResult {
         let regions = read_regions(self.process_handle);
-        let found = scan_regions(&regions, number);
+        let found = scan_regions(regions, number);
 
         if let Some(possible_addresses) = &mut self.possible_addresses {
             possible_addresses.retain(|addr| found.contains(addr));
