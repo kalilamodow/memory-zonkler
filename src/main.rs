@@ -4,10 +4,9 @@ use sysinfo::System;
 
 mod scanner;
 
-const PROCESS_NAME: &str = "test.exe";
-
 #[derive(Clone)]
 enum Message {
+    SetProcessName(String),
     OpenProcess,
     SetNumberToCheck(String),
     CheckNumber,
@@ -17,10 +16,8 @@ enum Message {
     Reset,
 }
 
-#[derive(Default)]
 enum AppState {
-    #[default]
-    WaitingForTarget,
+    WaitingForTarget(String),
     TargetOpened {
         scanner: Scanner,
         to_check: String,
@@ -35,16 +32,23 @@ enum AppState {
 }
 
 impl AppState {
+    fn new() -> Self {
+        Self::WaitingForTarget("".into())
+    }
+
     fn update(&mut self, message: Message) {
         match (&mut *self, message) {
             (Self::Failed(_), Message::Reset) => {
-                *self = Self::WaitingForTarget;
+                *self = Self::WaitingForTarget("".into());
             }
-            (Self::WaitingForTarget, Message::OpenProcess) => {
+            (Self::WaitingForTarget(process_name), Message::SetProcessName(new_process_name)) => {
+                *process_name = new_process_name;
+            }
+            (Self::WaitingForTarget(process_name), Message::OpenProcess) => {
                 let pid = {
                     let info = System::new_all();
                     let mut pid: Option<u32> = None;
-                    for process in info.processes_by_name(PROCESS_NAME.as_ref()) {
+                    for process in info.processes_by_name(process_name.as_ref()) {
                         pid = Some(process.pid().as_u32());
                     }
                     pid
@@ -148,8 +152,10 @@ impl AppState {
                 widget::text!("Error: {err}"),
                 widget::button("Reset").on_press(Message::Reset)
             ],
-            Self::WaitingForTarget => widget::column![
+            Self::WaitingForTarget(process_name) => widget::column![
                 widget::text("Welcome!"),
+                widget::text_input("Process name...", &process_name)
+                    .on_input(Message::SetProcessName),
                 widget::button("Load game memory").on_press(Message::OpenProcess)
             ],
             Self::TargetOpened {
@@ -190,7 +196,7 @@ impl AppState {
 }
 
 fn main() -> iced::Result {
-    iced::application(AppState::default, AppState::update, AppState::view)
+    iced::application(AppState::new, AppState::update, AppState::view)
         .title("memory zonkler")
         .window_size((300, 200))
         .run()
