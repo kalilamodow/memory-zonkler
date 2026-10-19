@@ -1,19 +1,36 @@
 use crate::scanner::{FoundAddress, ScanResult, Scanner};
-use iced::{Element, widget};
+use eframe::egui::{Direction, Ui};
+use eframe::{Frame, egui};
 use sysinfo::System;
 
 mod scanner;
 
-#[derive(Clone)]
-enum Message {
-    SetProcessName(String),
-    OpenProcess,
-    SetNumberToCheck(String),
-    CheckNumber,
-    UpdateFoundValue,
-    SetWriteInput(String),
-    Write,
-    Reset,
+struct FoundAddressState {
+    memory: FoundAddress,
+    current_value: i32,
+    new: String,
+}
+
+impl FoundAddressState {
+    fn update(&mut self) {
+        self.current_value = self.memory.read();
+    }
+
+    fn try_write(&self) -> Option<()> {
+        let value = self.new.parse::<i32>().ok()?;
+        self.memory.write(value);
+        Some(())
+    }
+}
+
+impl From<FoundAddress> for FoundAddressState {
+    fn from(value: FoundAddress) -> Self {
+        Self {
+            current_value: value.read(),
+            memory: value,
+            new: "".into(),
+        }
+    }
 }
 
 enum AppState {
@@ -23,181 +40,193 @@ enum AppState {
         to_check: String,
         possibilities: Option<usize>,
     },
-    GotAddress {
-        addr: FoundAddress,
-        current_value: i32,
-        input: String,
-    },
+    FoundAddresses(Vec<FoundAddressState>),
     Failed(String),
 }
 
-impl AppState {
-    fn new() -> Self {
+impl Default for AppState {
+    fn default() -> Self {
         Self::WaitingForTarget("".into())
-    }
-
-    fn update(&mut self, message: Message) {
-        match (&mut *self, message) {
-            (Self::Failed(_), Message::Reset) => {
-                *self = Self::WaitingForTarget("".into());
-            }
-            (Self::WaitingForTarget(process_name), Message::SetProcessName(new_process_name)) => {
-                *process_name = new_process_name;
-            }
-            (Self::WaitingForTarget(process_name), Message::OpenProcess) => {
-                let pid = {
-                    let info = System::new_all();
-                    let mut pid: Option<u32> = None;
-                    for process in info.processes_by_name(process_name.as_ref()) {
-                        pid = Some(process.pid().as_u32());
-                    }
-                    pid
-                };
-
-                let Some(pid) = pid else {
-                    *self = Self::Failed("Could not locate process".into());
-                    return;
-                };
-
-                *self = Self::TargetOpened {
-                    scanner: Scanner::new(pid),
-                    to_check: "".into(),
-                    possibilities: None,
-                };
-            }
-            (
-                Self::TargetOpened {
-                    scanner: _,
-                    to_check,
-                    possibilities: _,
-                },
-                Message::SetNumberToCheck(n),
-            ) => {
-                *to_check = n;
-            }
-            (
-                Self::TargetOpened {
-                    scanner,
-                    to_check,
-                    possibilities,
-                },
-                Message::CheckNumber,
-            ) => {
-                let Ok(number) = to_check.parse::<i32>() else {
-                    return;
-                };
-
-                match scanner.check(number) {
-                    ScanResult::Failed => {
-                        *self = Self::Failed("Ran out of possibilities".into());
-                    }
-                    ScanResult::NotFoundYet(new_possibilities) => {
-                        possibilities.replace(new_possibilities);
-                    }
-                    ScanResult::Found(found) => {
-                        let cur = found.read();
-                        *self = Self::GotAddress {
-                            addr: found,
-                            current_value: cur,
-                            input: String::new(),
-                        };
-                    }
-                }
-            }
-            (
-                Self::GotAddress {
-                    addr,
-                    current_value,
-                    input: _,
-                },
-                Message::UpdateFoundValue,
-            ) => {
-                *current_value = addr.read();
-            }
-            (
-                Self::GotAddress {
-                    addr: _,
-                    current_value: _,
-                    input,
-                },
-                Message::SetWriteInput(new_input),
-            ) => {
-                *input = new_input;
-            }
-
-            (
-                Self::GotAddress {
-                    addr,
-                    current_value: _,
-                    input,
-                },
-                Message::Write,
-            ) => {
-                let Ok(value) = input.parse::<i32>() else {
-                    return;
-                };
-
-                addr.write(value);
-                input.clear();
-            }
-
-            _ => {}
-        }
-    }
-
-    fn view(&self) -> Element<'_, Message> {
-        widget::center(match self {
-            Self::Failed(err) => widget::column![
-                widget::text("Failed :("),
-                widget::text!("Error: {err}"),
-                widget::button("Reset").on_press(Message::Reset)
-            ],
-            Self::WaitingForTarget(process_name) => widget::column![
-                widget::text("Welcome!"),
-                widget::text_input("Process name...", &process_name)
-                    .on_input(Message::SetProcessName),
-                widget::button("Load game memory").on_press(Message::OpenProcess)
-            ],
-            Self::TargetOpened {
-                scanner: _,
-                to_check,
-                possibilities,
-            } => widget::column![
-                widget::text("Process loaded :)"),
-                widget::text_input("Check against...", &to_check)
-                    .on_input(Message::SetNumberToCheck),
-                widget::button("Check").on_press(Message::CheckNumber),
-                widget::text(format!(
-                    "{} possibilities",
-                    possibilities
-                        .as_ref()
-                        .map(usize::to_string)
-                        .unwrap_or_else(|| "Infinite".into())
-                ))
-            ],
-            Self::GotAddress {
-                addr: _,
-                current_value,
-                input,
-            } => widget::column![
-                widget::text("Found!"),
-                widget::row![
-                    widget::text(format!("Current value: {current_value}")),
-                    widget::button("Update").on_press(Message::UpdateFoundValue),
-                ],
-                widget::row![
-                    widget::text_input("Set value...", &input).on_input(Message::SetWriteInput),
-                    widget::button("Write value").on_press(Message::Write)
-                ],
-            ],
-        })
-        .into()
     }
 }
 
-fn main() -> iced::Result {
-    iced::application(AppState::new, AppState::update, AppState::view)
-        .title("memory zonkler")
-        .window_size((300, 200))
-        .run()
+impl AppState {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn open_target(&mut self, name: String) {
+        let pid = {
+            let info = System::new_all();
+            let mut pid: Option<u32> = None;
+            for process in info.processes_by_name(name.as_ref()) {
+                pid = Some(process.pid().as_u32());
+            }
+            pid
+        };
+
+        let Some(pid) = pid else {
+            *self = Self::Failed("Could not locate process".into());
+            return;
+        };
+
+        *self = Self::TargetOpened {
+            scanner: Scanner::new(pid),
+            to_check: "".into(),
+            possibilities: None,
+        }
+    }
+
+    fn accept(&mut self) {
+        let old_self = std::mem::replace(
+            self,
+            Self::Failed(
+                "invalid state (AppState::accept without being AppState::TargetOpened)".into(),
+            ),
+        );
+        let Self::TargetOpened { scanner, .. } = old_self else {
+            return;
+        };
+        *self = Self::FoundAddresses(scanner.accept().into_iter().map(Into::into).collect());
+    }
+
+    fn failed(&mut self, error: String) {
+        *self = Self::Failed(error);
+    }
+}
+
+fn short_input(text: &mut String) -> impl egui::Widget {
+    egui::TextEdit::singleline(text).desired_width(100.0)
+}
+
+#[derive(Default)]
+struct App {
+    state: AppState,
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
+        egui::CentralPanel::default_margins().show(ui, |ui| match &mut self.state {
+            AppState::WaitingForTarget(process_name) => {
+                ui.label("Enter process name");
+                ui.add(short_input(process_name));
+                if ui.button("OK").clicked() {
+                    let process_name = std::mem::take(process_name);
+                    self.state.open_target(process_name);
+                }
+            }
+            AppState::TargetOpened {
+                scanner,
+                to_check,
+                possibilities,
+            } => {
+                ui.label("Target process opened!");
+
+                let mut should_run_filter = false;
+                ui.horizontal(|ui| {
+                    ui.label("Next value:");
+                    ui.add(short_input(to_check));
+                    should_run_filter = ui.button("Filter").clicked();
+                });
+
+                ui.add_space(4.0);
+
+                let mut should_accept = false;
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "Current # of possibilities: {}",
+                        possibilities
+                            .as_ref()
+                            .map(usize::to_string)
+                            .unwrap_or_else(|| "Infinite".into())
+                    ));
+                    should_accept = ui.button("Accept").clicked();
+                });
+
+                if should_run_filter && let Ok(check) = to_check.parse::<i32>() {
+                    match scanner.check(check) {
+                        ScanResult::Found(count) => {
+                            possibilities.replace(count);
+                        }
+                        ScanResult::Failed => {
+                            self.state.failed("Ran out of possibilities".into());
+                        }
+                    }
+                } else if should_accept {
+                    self.state.accept();
+                }
+            }
+            AppState::FoundAddresses(addrs) => {
+                let mut should_reset = false;
+                ui.horizontal(|ui| {
+                    ui.strong(format!("Found {} addresses", addrs.len()));
+                    if ui.button("Done").clicked() {
+                        should_reset = true;
+                    }
+                });
+                if should_reset {
+                    self.state.reset();
+                    return;
+                }
+
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    for address in &mut *addrs {
+                        ui.group(|ui| {
+                            ui.columns_const(|[c1, c2]| {
+                                c1.small(address.memory.format());
+                                c1.add_space(4.0);
+                                c1.horizontal(|ui| {
+                                    ui.add(short_input(&mut address.new));
+                                    if ui.button("Write").clicked() {
+                                        address.try_write();
+                                    }
+                                });
+
+                                c2.with_layout(
+                                    egui::Layout::from_main_dir_and_cross_align(
+                                        Direction::TopDown,
+                                        egui::Align::Max,
+                                    ),
+                                    |ui| {
+                                        ui.label(format!("Current: {}", address.current_value));
+                                        if ui.button("Update").clicked() {
+                                            address.update();
+                                        }
+                                    },
+                                );
+                            });
+                        });
+                    }
+                });
+
+                ui.add_space(4.0);
+                if ui.button("Update all").clicked() {
+                    for addr in addrs {
+                        addr.update();
+                    }
+                }
+            }
+            AppState::Failed(error) => {
+                ui.strong("Failure:");
+                ui.colored_label(ui.visuals().error_fg_color, error);
+                if ui.button("Reset").clicked() {
+                    self.state.reset();
+                }
+            }
+        });
+    }
+}
+
+fn main() -> eframe::Result {
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 300.0]),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "memory zonkler",
+        native_options,
+        Box::new(|_cc| Ok(Box::<App>::default())),
+    )
 }

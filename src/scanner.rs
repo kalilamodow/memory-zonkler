@@ -161,6 +161,10 @@ impl FoundAddress {
         FoundAddress { address, process }
     }
 
+    pub fn format(&self) -> String {
+        format!("{:x}", self.address)
+    }
+
     pub fn read(&self) -> i32 {
         let mut value = 0i32;
 
@@ -194,8 +198,7 @@ impl FoundAddress {
 }
 
 pub enum ScanResult {
-    Found(FoundAddress),
-    NotFoundYet(usize),
+    Found(usize),
     Failed,
 }
 
@@ -252,14 +255,22 @@ impl Scanner {
 
         eprintln!("scanned in {:?}", start.elapsed());
 
-        let count = self.possible.as_ref().unwrap().values().map(Vec::len).sum();
+        let count = self.possible.as_ref().unwrap().values().flatten().count();
         match count {
-            1 => ScanResult::Found(FoundAddress::new(
-                self.possible.take().unwrap().into_values().nth(0).unwrap()[0],
-                self.process_handle,
-            )),
             0 => ScanResult::Failed,
-            _ => ScanResult::NotFoundYet(count),
+            n => ScanResult::Found(n),
         }
+    }
+
+    pub fn accept(self) -> Vec<FoundAddress> {
+        self.possible
+            .map(|possible| {
+                possible
+                    .into_values()
+                    .flatten()
+                    .map(|addr| FoundAddress::new(addr, self.process_handle))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
