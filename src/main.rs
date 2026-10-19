@@ -1,6 +1,9 @@
 use crate::scanner::{FoundAddress, ScanResult, Scanner};
-use eframe::egui::{Direction, Ui};
+use eframe::egui::{Context, Direction, Ui};
 use eframe::{Frame, egui};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc;
+use std::thread;
 use sysinfo::{ProcessesToUpdate, System};
 
 mod scanner;
@@ -16,9 +19,10 @@ impl FoundAddressState {
         self.current_value = self.memory.read();
     }
 
-    fn try_write(&self) -> Option<()> {
+    fn try_write(&mut self) -> Option<()> {
         let value = self.new.parse::<i32>().ok()?;
         self.memory.write(value);
+        self.update();
         Some(())
     }
 }
@@ -48,6 +52,7 @@ enum AppState {
         to_check: String,
         possibilities: Option<usize>,
     },
+    Scanning(AtomicU8), // 0-100
     FoundAddresses(Vec<FoundAddressState>),
     Failed(String),
 }
@@ -83,6 +88,21 @@ impl AppState {
         }
     }
 
+    fn done_scanning(&mut self, scanner: Scanner, scan_result: ScanResult) {
+        match scan_result {
+            ScanResult::Found(possibilities) => {
+                *self = Self::TargetOpened {
+                    scanner,
+                    to_check: "".into(),
+                    possibilities: Some(possibilities),
+                }
+            }
+            ScanResult::Failed => {
+                self.failed("Scan failed".into());
+            }
+        }
+    }
+
     fn accept(&mut self) {
         let old_self = std::mem::replace(
             self,
@@ -105,12 +125,38 @@ fn short_input(text: &mut String) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(text).desired_width(100.0)
 }
 
+enum ScanProgressMessage {
+    Progressed(u8),
+    Done(Scanner, ScanResult),
+}
+
 #[derive(Default)]
 struct App {
     state: AppState,
+    scan_progress_rx: Option<mpsc::Receiver<ScanProgressMessage>>,
 }
 
 impl eframe::App for App {
+    fn logic(&mut self, _: &Context, _: &mut Frame) {
+        if let Some(rx) = &self.scan_progress_rx {
+            if let AppState::Scanning(atom) = &mut self.state {
+                for msg in rx.try_iter() {
+                    match msg {
+                        ScanProgressMessage::Progressed(p) => {
+                            atom.store(p, Ordering::Relaxed);
+                        }
+                        ScanProgressMessage::Done(scanner, result) => {
+                            self.state.done_scanning(scanner, result);
+                            break;
+                        }
+                    }
+                }
+            } else {
+                self.scan_progress_rx = None;
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
         egui::CentralPanel::default_margins().show(ui, |ui| match &mut self.state {
             AppState::WaitingForTarget {
@@ -157,7 +203,7 @@ impl eframe::App for App {
                 }
             }
             AppState::TargetOpened {
-                scanner,
+                scanner: _,
                 to_check,
                 possibilities,
             } => {
@@ -185,17 +231,30 @@ impl eframe::App for App {
                 });
 
                 if should_run_filter && let Ok(check) = to_check.parse::<i32>() {
-                    match scanner.check(check) {
-                        ScanResult::Found(count) => {
-                            possibilities.replace(count);
-                        }
-                        ScanResult::Failed => {
-                            self.state.failed("Ran out of possibilities".into());
-                        }
-                    }
+                    let progress = AtomicU8::new(0);
+                    let (tx, rx) = mpsc::channel();
+                    self.scan_progress_rx = Some(rx);
+                    let state = std::mem::replace(&mut self.state, AppState::Scanning(progress));
+                    let mut scanner = match state {
+                        AppState::TargetOpened { scanner, .. } => scanner,
+                        _ => unreachable!("enum switched variants randomly"),
+                    };
+
+                    thread::spawn(move || {
+                        let result = scanner.scan(check, |p| {
+                            let _ =
+                                tx.send(ScanProgressMessage::Progressed((p * 100.0).round() as u8));
+                        });
+                        tx.send(ScanProgressMessage::Done(scanner, result)).unwrap();
+                    });
                 } else if should_accept {
                     self.state.accept();
                 }
+            }
+            AppState::Scanning(progress) => {
+                let progress = progress.load(Ordering::Relaxed) as f32 / 100.0;
+                ui.strong("Scanning...");
+                ui.add(egui::ProgressBar::new(progress));
             }
             AppState::FoundAddresses(addrs) => {
                 let mut should_reset = false;

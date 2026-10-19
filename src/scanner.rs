@@ -24,6 +24,21 @@ pub struct MemoryRegion {
 pub type Address = usize;
 type BaseAddress = Address;
 
+#[derive(Clone, Copy)]
+struct ProcessHandle(usize);
+
+impl From<HANDLE> for ProcessHandle {
+    fn from(value: HANDLE) -> Self {
+        ProcessHandle(value.0 as usize)
+    }
+}
+
+impl From<ProcessHandle> for HANDLE {
+    fn from(value: ProcessHandle) -> Self {
+        HANDLE(value.0 as *mut c_void)
+    }
+}
+
 fn get_system_info() -> SYSTEM_INFO {
     let mut info = SYSTEM_INFO::default();
     unsafe {
@@ -32,11 +47,14 @@ fn get_system_info() -> SYSTEM_INFO {
     info
 }
 
-fn query_mem_info(process_handle: HANDLE, address: *const c_void) -> MEMORY_BASIC_INFORMATION {
+fn query_mem_info(
+    process_handle: ProcessHandle,
+    address: *const c_void,
+) -> MEMORY_BASIC_INFORMATION {
     let mut info = MEMORY_BASIC_INFORMATION::default();
     unsafe {
         VirtualQueryEx(
-            process_handle,
+            process_handle.into(),
             Some(address),
             &mut info,
             size_of::<MEMORY_BASIC_INFORMATION>(),
@@ -51,7 +69,7 @@ fn region_is_writable(protect: u32) -> bool {
 }
 
 fn read_process_memory(
-    process_handle: HANDLE,
+    process_handle: ProcessHandle,
     address: BaseAddress,
     size: usize,
 ) -> windows::core::Result<Vec<u8>> {
@@ -60,7 +78,7 @@ fn read_process_memory(
 
     let read_result = unsafe {
         ReadProcessMemory(
-            process_handle,
+            process_handle.into(),
             address as *const c_void,
             buf.as_mut_ptr() as *mut c_void,
             size,
@@ -81,7 +99,7 @@ fn read_process_memory(
     Ok(buf)
 }
 
-fn query_memory_regions(process_handle: HANDLE) -> Vec<MemoryRegion> {
+fn query_memory_regions(process_handle: ProcessHandle) -> Vec<MemoryRegion> {
     let system_info = get_system_info();
 
     let mut current_address = system_info.lpMinimumApplicationAddress as usize;
@@ -112,12 +130,13 @@ fn query_memory_regions(process_handle: HANDLE) -> Vec<MemoryRegion> {
     regions
 }
 
-fn initial_scan_regions(
+fn initial_scan_regions<OnProgressFn: Fn(f32) + Send + Sync>(
     regions: Vec<MemoryRegion>,
     check: i32,
+    on_progress: OnProgressFn,
 ) -> HashMap<MemoryRegion, Vec<Address>> {
     let progress = AtomicUsize::new(0);
-    let total_regions = regions.len();
+    let total_regions = regions.len() as f32;
     regions
         .into_par_iter()
         .map(|region| {
@@ -132,13 +151,15 @@ fn initial_scan_regions(
                 cursor.set_position(index + 1);
             }
             let prev_progress = progress.fetch_add(1, Ordering::Relaxed);
-            println!("progress: {}/{}", prev_progress + 1, total_regions);
+            println!("progress: {}/{}", prev_progress + 1, total_regions as usize);
+            on_progress(prev_progress as f32 / total_regions);
+
             (region, result)
         })
         .collect()
 }
 
-fn pid_to_handle(pid: u32) -> HANDLE {
+fn pid_to_handle(pid: u32) -> ProcessHandle {
     let process = unsafe {
         windows::Win32::System::Threading::OpenProcess(
             PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION,
@@ -148,16 +169,16 @@ fn pid_to_handle(pid: u32) -> HANDLE {
         .expect("could not open process")
     };
 
-    process
+    process.into()
 }
 
 pub struct FoundAddress {
     address: Address,
-    process: HANDLE,
+    process: ProcessHandle,
 }
 
 impl FoundAddress {
-    fn new(address: Address, process: HANDLE) -> Self {
+    fn new(address: Address, process: ProcessHandle) -> Self {
         FoundAddress { address, process }
     }
 
@@ -170,7 +191,7 @@ impl FoundAddress {
 
         unsafe {
             ReadProcessMemory(
-                self.process,
+                self.process.into(),
                 self.address as *const c_void,
                 &mut value as *mut i32 as *mut c_void,
                 size_of::<i32>(),
@@ -186,7 +207,7 @@ impl FoundAddress {
         let buf = val.to_le_bytes();
         unsafe {
             WriteProcessMemory(
-                self.process,
+                self.process.into(),
                 self.address as *const c_void,
                 buf.as_ptr() as *const c_void,
                 size_of::<i32>(),
@@ -203,7 +224,7 @@ pub enum ScanResult {
 }
 
 pub struct Scanner {
-    process_handle: HANDLE,
+    process_handle: ProcessHandle,
     possible: Option<HashMap<MemoryRegion, Vec<Address>>>,
 }
 
@@ -215,23 +236,26 @@ impl Scanner {
         }
     }
 
-    pub fn check(&mut self, check: i32) -> ScanResult {
+    pub fn scan<OnProgressFn: Fn(f32) + Send + Sync>(
+        &mut self,
+        check: i32,
+        on_progress: OnProgressFn,
+    ) -> ScanResult {
         let start = Instant::now();
         self.possible = Some(match self.possible.take() {
             None => {
                 let regions = query_memory_regions(self.process_handle);
-                initial_scan_regions(regions, check)
+                initial_scan_regions(regions, check, on_progress)
             }
             Some(possible) => {
                 let finished = AtomicUsize::new(0);
-                let total_regions = possible.len();
-                let process_handle = self.process_handle.0 as usize;
+                let total_regions = possible.len() as f32;
 
                 possible
                     .into_par_iter()
                     .filter_map(|(mut region, mut addrs)| {
                         region.contents = read_process_memory(
-                            HANDLE(process_handle as *mut c_void),
+                            self.process_handle,
                             region.base_address,
                             region.contents.len(),
                         )
@@ -247,6 +271,8 @@ impl Scanner {
 
                         let new_finished = finished.fetch_add(1, Ordering::Relaxed) + 1;
                         println!("update: finished {new_finished}/{total_regions}");
+                        on_progress(new_finished as f32 / total_regions);
+
                         Some((region, addrs))
                     })
                     .collect()
