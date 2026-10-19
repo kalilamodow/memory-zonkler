@@ -112,22 +112,6 @@ fn query_memory_regions(process_handle: HANDLE) -> Vec<MemoryRegion> {
     regions
 }
 
-fn scan_region(region: &MemoryRegion, check: i32) -> Vec<Address> {
-    let mut result = vec![];
-    let mut cursor = Cursor::new(&region.contents);
-    while let Ok(number) = cursor.read_i32::<LittleEndian>() {
-        let index = cursor.position() - 4;
-        if number == check {
-            result.push(region.base_address + index as usize);
-        }
-
-        // because read_i32 moves forward by 4 bytes
-        cursor.set_position(index + 1);
-    }
-
-    result
-}
-
 fn initial_scan_regions(
     regions: Vec<MemoryRegion>,
     check: i32,
@@ -137,7 +121,16 @@ fn initial_scan_regions(
     regions
         .into_par_iter()
         .map(|region| {
-            let result = scan_region(&region, check);
+            let mut result = vec![];
+            let mut cursor = Cursor::new(&region.contents);
+            while let Ok(number) = cursor.read_i32::<LittleEndian>() {
+                let index = cursor.position() - 4;
+                if number == check {
+                    result.push(region.base_address + index as usize);
+                }
+
+                cursor.set_position(index + 1);
+            }
             let prev_progress = progress.fetch_add(1, Ordering::Relaxed);
             println!("progress: {}/{}", prev_progress + 1, total_regions);
             (region, result)
@@ -229,15 +222,29 @@ impl Scanner {
             Some(possible) => {
                 let finished = AtomicUsize::new(0);
                 let total_regions = possible.len();
+                let process_handle = self.process_handle.0 as usize;
 
                 possible
                     .into_par_iter()
-                    .filter_map(|(region, _)| {
-                        let scan = scan_region(&region, check);
-                        let new_finished = finished.fetch_add(1, Ordering::Relaxed) + 1;
-                        println!("scanned {new_finished}/{total_regions}");
+                    .filter_map(|(mut region, mut addrs)| {
+                        region.contents = read_process_memory(
+                            HANDLE(process_handle as *mut c_void),
+                            region.base_address,
+                            region.contents.len(),
+                        )
+                        .ok()?;
 
-                        (!scan.is_empty()).then_some((region, scan))
+                        let mut cursor = Cursor::new(&region.contents);
+                        addrs.retain(|addr| {
+                            let relative_offset = addr - region.base_address;
+                            cursor.set_position(relative_offset as u64);
+                            let value = cursor.read_i32::<LittleEndian>().unwrap();
+                            value == check
+                        });
+
+                        let new_finished = finished.fetch_add(1, Ordering::Relaxed) + 1;
+                        println!("update: finished {new_finished}/{total_regions}");
+                        Some((region, addrs))
                     })
                     .collect()
             }

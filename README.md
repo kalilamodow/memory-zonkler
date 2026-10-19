@@ -9,3 +9,4 @@ like cheat engine but worse :)
 | naive            | > 2 mins (bored of waiting to finish) | -               | 
 | rayon first scan | 28 seconds                            | 28 seconds      |
 | rayon all scans  | 28 seconds                            | 18 seconds      |
+| new filtering    | 28 seconds                            | 4 seconds       |
