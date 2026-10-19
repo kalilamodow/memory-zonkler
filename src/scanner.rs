@@ -287,13 +287,14 @@ impl Scanner {
         }
     }
 
-    pub fn accept(self) -> Vec<FoundAddress> {
+    pub fn accept(&self) -> Vec<FoundAddress> {
         self.possible
+            .as_ref()
             .map(|possible| {
                 possible
-                    .into_values()
+                    .values()
                     .flatten()
-                    .map(|addr| FoundAddress::new(addr, self.process_handle))
+                    .map(|&addr| FoundAddress::new(addr, self.process_handle))
                     .collect()
             })
             .unwrap_or_default()

@@ -51,9 +51,9 @@ enum AppState {
         scanner: Scanner,
         to_check: String,
         possibilities: Option<usize>,
+        accepted: Option<Vec<FoundAddressState>>,
     },
     Scanning(AtomicU8), // 0-100
-    FoundAddresses(Vec<FoundAddressState>),
     Failed(String),
 }
 
@@ -97,6 +97,7 @@ impl AppState {
             scanner: Scanner::new(pid),
             to_check: "".into(),
             possibilities: None,
+            accepted: None,
         }
     }
 
@@ -107,25 +108,13 @@ impl AppState {
                     scanner,
                     to_check: "".into(),
                     possibilities: Some(possibilities),
+                    accepted: None,
                 }
             }
             ScanResult::Failed => {
                 self.failed("Scan failed".into());
             }
         }
-    }
-
-    fn accept(&mut self) {
-        let old_self = std::mem::replace(
-            self,
-            Self::Failed(
-                "invalid state (AppState::accept without being AppState::TargetOpened)".into(),
-            ),
-        );
-        let Self::TargetOpened { scanner, .. } = old_self else {
-            return;
-        };
-        *self = Self::FoundAddresses(scanner.accept().into_iter().map(Into::into).collect());
     }
 
     fn failed(&mut self, error: String) {
@@ -220,66 +209,122 @@ impl eframe::App for App {
                 }
             }
             AppState::TargetOpened {
-                scanner: _,
+                scanner,
                 to_check,
                 possibilities,
+                accepted,
             } => {
-                let mut should_reset = false;
-                ui.horizontal(|ui| {
-                    ui.strong("Target process opened!");
+                if let Some(accepted) = accepted {
+                    let mut should_reset = false;
+                    ui.horizontal(|ui| {
+                        ui.strong(format!("Found {} addresses", accepted.len()));
+                        if ui.button("Update all").clicked() {
+                            for addr in &mut *accepted {
+                                addr.update();
+                            }
+                        }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        if ui.button("Back").clicked() {
-                            should_reset = true;
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            if ui.button("Done").clicked() {
+                                should_reset = true;
+                            }
+                        });
+                    });
+                    if should_reset {
+                        self.state.reset();
+                        return;
+                    }
+
+                    ui.add_space(8.0);
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for address in &mut *accepted {
+                            ui.group(|ui| {
+                                ui.columns_const(|[c1, c2]| {
+                                    c1.small(address.memory.format());
+                                    c1.add_space(4.0);
+                                    c1.horizontal(|ui| {
+                                        ui.add(short_input(&mut address.new));
+                                        if ui.button("Write").clicked() {
+                                            address.try_write();
+                                        }
+                                    });
+
+                                    c2.with_layout(
+                                        egui::Layout::from_main_dir_and_cross_align(
+                                            Direction::TopDown,
+                                            egui::Align::Max,
+                                        ),
+                                        |ui| {
+                                            ui.label(format!("Current: {}", address.current_value));
+                                            if ui.button("Update").clicked() {
+                                                address.update();
+                                            }
+                                        },
+                                    );
+                                });
+                            });
                         }
                     });
-                });
-                if should_reset {
-                    self.state.reset();
-                    return;
-                }
-                ui.add_space(8.0);
+                } else {
+                    let mut should_reset = false;
+                    ui.horizontal(|ui| {
+                        ui.strong("Target process opened!");
 
-                let mut should_run_filter = false;
-                ui.horizontal(|ui| {
-                    ui.label("Next value:");
-                    ui.add(short_input(to_check));
-                    should_run_filter = ui.button("Filter").clicked();
-                });
-
-                ui.add_space(4.0);
-
-                let mut should_accept = false;
-                ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "Current # of possibilities: {}",
-                        possibilities
-                            .as_ref()
-                            .map(usize::to_string)
-                            .unwrap_or_else(|| "Infinite".into())
-                    ));
-                    should_accept = ui.button("Accept").clicked();
-                });
-
-                if should_run_filter && let Ok(check) = to_check.parse::<i32>() {
-                    let progress = AtomicU8::new(0);
-                    let (tx, rx) = mpsc::channel();
-                    self.scan_progress_rx = Some(rx);
-                    let state = std::mem::replace(&mut self.state, AppState::Scanning(progress));
-                    let mut scanner = match state {
-                        AppState::TargetOpened { scanner, .. } => scanner,
-                        _ => unreachable!("enum switched variants randomly"),
-                    };
-
-                    thread::spawn(move || {
-                        let result = scanner.scan(check, |p| {
-                            let _ =
-                                tx.send(ScanProgressMessage::Progressed((p * 100.0).round() as u8));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            if ui.button("Back").clicked() {
+                                should_reset = true;
+                            }
                         });
-                        tx.send(ScanProgressMessage::Done(scanner, result)).unwrap();
                     });
-                } else if should_accept {
-                    self.state.accept();
+                    if should_reset {
+                        self.state.reset();
+                        return;
+                    }
+                    ui.add_space(8.0);
+
+                    let mut should_run_filter = false;
+                    ui.horizontal(|ui| {
+                        ui.label("Next value:");
+                        ui.add(short_input(to_check));
+                        should_run_filter = ui.button("Filter").clicked();
+                    });
+
+                    ui.add_space(4.0);
+
+                    let mut should_accept = false;
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Current # of possibilities: {}",
+                            possibilities
+                                .as_ref()
+                                .map(usize::to_string)
+                                .unwrap_or_else(|| "Infinite".into())
+                        ));
+                        should_accept = ui.button("Accept").clicked();
+                    });
+
+                    if should_run_filter && let Ok(check) = to_check.parse::<i32>() {
+                        let progress = AtomicU8::new(0);
+                        let (tx, rx) = mpsc::channel();
+                        self.scan_progress_rx = Some(rx);
+                        let state =
+                            std::mem::replace(&mut self.state, AppState::Scanning(progress));
+                        let mut scanner = match state {
+                            AppState::TargetOpened { scanner, .. } => scanner,
+                            _ => unreachable!("enum switched variants randomly"),
+                        };
+
+                        thread::spawn(move || {
+                            let result = scanner.scan(check, |p| {
+                                let _ = tx.send(ScanProgressMessage::Progressed(
+                                    (p * 100.0).round() as u8,
+                                ));
+                            });
+                            tx.send(ScanProgressMessage::Done(scanner, result)).unwrap();
+                        });
+                    } else if should_accept {
+                        *accepted = Some(scanner.accept().into_iter().map(Into::into).collect());
+                    }
                 }
             }
             AppState::Scanning(progress) => {
@@ -287,58 +332,6 @@ impl eframe::App for App {
                 ui.strong("Scanning...");
                 ui.add(egui::ProgressBar::new(progress));
                 ui.request_repaint();
-            }
-            AppState::FoundAddresses(addrs) => {
-                let mut should_reset = false;
-                ui.horizontal(|ui| {
-                    ui.strong(format!("Found {} addresses", addrs.len()));
-                    if ui.button("Update all").clicked() {
-                        for addr in &mut *addrs {
-                            addr.update();
-                        }
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        if ui.button("Done").clicked() {
-                            should_reset = true;
-                        }
-                    });
-                });
-                if should_reset {
-                    self.state.reset();
-                    return;
-                }
-
-                ui.add_space(8.0);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for address in &mut *addrs {
-                        ui.group(|ui| {
-                            ui.columns_const(|[c1, c2]| {
-                                c1.small(address.memory.format());
-                                c1.add_space(4.0);
-                                c1.horizontal(|ui| {
-                                    ui.add(short_input(&mut address.new));
-                                    if ui.button("Write").clicked() {
-                                        address.try_write();
-                                    }
-                                });
-
-                                c2.with_layout(
-                                    egui::Layout::from_main_dir_and_cross_align(
-                                        Direction::TopDown,
-                                        egui::Align::Max,
-                                    ),
-                                    |ui| {
-                                        ui.label(format!("Current: {}", address.current_value));
-                                        if ui.button("Update").clicked() {
-                                            address.update();
-                                        }
-                                    },
-                                );
-                            });
-                        });
-                    }
-                });
             }
             AppState::Failed(error) => {
                 ui.strong("Failure:");
