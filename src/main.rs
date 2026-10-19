@@ -57,19 +57,31 @@ enum AppState {
     Failed(String),
 }
 
+fn get_process_list() -> Vec<ChoosableProcess> {
+    let mut info = System::new();
+    info.refresh_processes(ProcessesToUpdate::All, true);
+    let mut processes: Vec<_> = info
+        .processes()
+        .into_iter()
+        .map(|(pid, process)| ChoosableProcess {
+            pid: pid.as_u32(),
+            name: process.name().to_string_lossy().into_owned(),
+        })
+        .collect();
+
+    // highest to lowest pid
+    processes.sort_by_key(|p| p.pid);
+    processes.reverse();
+
+    processes
+}
+
 impl Default for AppState {
     fn default() -> Self {
         let mut info = System::new();
         info.refresh_processes(ProcessesToUpdate::All, true);
         Self::WaitingForTarget {
-            processes: info
-                .processes()
-                .into_iter()
-                .map(|(pid, process)| ChoosableProcess {
-                    pid: pid.as_u32(),
-                    name: process.name().to_string_lossy().into_owned(),
-                })
-                .collect(),
+            processes: get_process_list(),
             filter_input: "".into(),
         }
     }
@@ -169,6 +181,10 @@ impl eframe::App for App {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                         ui.add(short_input(filter_input).hint_text("Filter..."));
+
+                        if ui.button("Refresh").clicked() {
+                            *processes = get_process_list();
+                        }
                     });
                 });
 
@@ -208,7 +224,21 @@ impl eframe::App for App {
                 to_check,
                 possibilities,
             } => {
-                ui.label("Target process opened!");
+                let mut should_reset = false;
+                ui.horizontal(|ui| {
+                    ui.strong("Target process opened!");
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if ui.button("Back").clicked() {
+                            should_reset = true;
+                        }
+                    });
+                });
+                if should_reset {
+                    self.state.reset();
+                    return;
+                }
+                ui.add_space(8.0);
 
                 let mut should_run_filter = false;
                 ui.horizontal(|ui| {
@@ -262,9 +292,17 @@ impl eframe::App for App {
                 let mut should_reset = false;
                 ui.horizontal(|ui| {
                     ui.strong(format!("Found {} addresses", addrs.len()));
-                    if ui.button("Done").clicked() {
-                        should_reset = true;
+                    if ui.button("Update all").clicked() {
+                        for addr in &mut *addrs {
+                            addr.update();
+                        }
                     }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if ui.button("Done").clicked() {
+                            should_reset = true;
+                        }
+                    });
                 });
                 if should_reset {
                     self.state.reset();
@@ -272,7 +310,7 @@ impl eframe::App for App {
                 }
 
                 ui.add_space(8.0);
-                ui.vertical(|ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                     for address in &mut *addrs {
                         ui.group(|ui| {
                             ui.columns_const(|[c1, c2]| {
@@ -301,13 +339,6 @@ impl eframe::App for App {
                         });
                     }
                 });
-
-                ui.add_space(4.0);
-                if ui.button("Update all").clicked() {
-                    for addr in addrs {
-                        addr.update();
-                    }
-                }
             }
             AppState::Failed(error) => {
                 ui.strong("Failure:");
