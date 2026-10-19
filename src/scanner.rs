@@ -140,16 +140,15 @@ fn initial_scan_regions<OnProgressFn: Fn(f32) + Send + Sync>(
     regions
         .into_par_iter()
         .map(|region| {
-            let mut result = vec![];
-            let mut cursor = Cursor::new(&region.contents);
-            while let Ok(number) = cursor.read_i32::<LittleEndian>() {
-                let index = cursor.position() - 4;
-                if number == check {
-                    result.push(region.base_address + index as usize);
-                }
+            let result = region
+                .contents
+                .par_array_windows::<4>()
+                .map(|bytes| i32::from_le_bytes(*bytes))
+                .enumerate()
+                .filter_map(|(offset, v)| (check == v).then_some(offset))
+                .map(|offset| region.base_address + offset)
+                .collect();
 
-                cursor.set_position(index + 1);
-            }
             let prev_progress = progress.fetch_add(1, Ordering::Relaxed);
             println!("progress: {}/{}", prev_progress + 1, total_regions as usize);
             on_progress(prev_progress as f32 / total_regions);
