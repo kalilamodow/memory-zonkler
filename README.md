@@ -4,10 +4,11 @@ like cheat engine but worse :)
 
 #### benchmarks
 
-| implementation   | first scan time                       | third scan time |
-|------------------|---------------------------------------|-----------------|
-| naive            | > 2 mins (bored of waiting to finish) | -               | 
-| rayon first scan | 28 seconds                            | 28 seconds      |
-| rayon all scans  | 28 seconds                            | 18 seconds      |
-| new filtering    | 28 seconds                            | 4 seconds       |
-| rayon searching  | 8.9 seconds                           | 4 seconds       |
+| implementation     | first scan time                       | third scan time |
+|--------------------|---------------------------------------|-----------------|
+| naive              | > 2 mins (bored of waiting to finish) | -               | 
+| rayon first scan   | 28 seconds                            | 28 seconds      |
+| rayon all scans    | 28 seconds                            | 18 seconds      |
+| new filtering      | 28 seconds                            | 4 seconds       |
+| rayon searching    | 8.9 seconds                           | 4 seconds       |
+| improved filtering | 9 seconds                             | 85 ms           |

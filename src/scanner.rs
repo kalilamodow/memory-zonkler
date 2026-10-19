@@ -272,7 +272,7 @@ impl Scanner {
                         println!("update: finished {new_finished}/{total_regions}");
                         on_progress(new_finished as f32 / total_regions);
 
-                        Some((region, addrs))
+                        (!addrs.is_empty()).then_some((region, addrs))
                     })
                     .collect()
             }
