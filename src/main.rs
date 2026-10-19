@@ -1,7 +1,7 @@
 use crate::scanner::{FoundAddress, ScanResult, Scanner};
 use eframe::egui::{Direction, Ui};
 use eframe::{Frame, egui};
-use sysinfo::System;
+use sysinfo::{ProcessesToUpdate, System};
 
 mod scanner;
 
@@ -33,8 +33,16 @@ impl From<FoundAddress> for FoundAddressState {
     }
 }
 
+struct ChoosableProcess {
+    name: String,
+    pid: u32,
+}
+
 enum AppState {
-    WaitingForTarget(String),
+    WaitingForTarget {
+        processes: Vec<ChoosableProcess>,
+        filter_input: String,
+    },
     TargetOpened {
         scanner: Scanner,
         to_check: String,
@@ -46,7 +54,19 @@ enum AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::WaitingForTarget("".into())
+        let mut info = System::new();
+        info.refresh_processes(ProcessesToUpdate::All, true);
+        Self::WaitingForTarget {
+            processes: info
+                .processes()
+                .into_iter()
+                .map(|(pid, process)| ChoosableProcess {
+                    pid: pid.as_u32(),
+                    name: process.name().to_string_lossy().into_owned(),
+                })
+                .collect(),
+            filter_input: "".into(),
+        }
     }
 }
 
@@ -55,21 +75,7 @@ impl AppState {
         *self = Self::default();
     }
 
-    fn open_target(&mut self, name: String) {
-        let pid = {
-            let info = System::new_all();
-            let mut pid: Option<u32> = None;
-            for process in info.processes_by_name(name.as_ref()) {
-                pid = Some(process.pid().as_u32());
-            }
-            pid
-        };
-
-        let Some(pid) = pid else {
-            *self = Self::Failed("Could not locate process".into());
-            return;
-        };
-
+    fn open_target(&mut self, pid: u32) {
         *self = Self::TargetOpened {
             scanner: Scanner::new(pid),
             to_check: "".into(),
@@ -95,7 +101,7 @@ impl AppState {
     }
 }
 
-fn short_input(text: &mut String) -> impl egui::Widget {
+fn short_input(text: &mut String) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(text).desired_width(100.0)
 }
 
@@ -107,12 +113,47 @@ struct App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
         egui::CentralPanel::default_margins().show(ui, |ui| match &mut self.state {
-            AppState::WaitingForTarget(process_name) => {
-                ui.label("Enter process name");
-                ui.add(short_input(process_name));
-                if ui.button("OK").clicked() {
-                    let process_name = std::mem::take(process_name);
-                    self.state.open_target(process_name);
+            AppState::WaitingForTarget {
+                processes,
+                filter_input,
+            } => {
+                ui.horizontal(|ui| {
+                    ui.label("Choose a process");
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        ui.add(short_input(filter_input).hint_text("Filter..."));
+                    });
+                });
+
+                ui.separator();
+
+                let mut pid_to_open: Option<u32> = None;
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.vertical_centered_justified(|ui| {
+                        for choice in processes.iter().filter(|p| {
+                            p.name.to_lowercase().contains(&filter_input.to_lowercase())
+                        }) {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(&choice.name);
+                                    ui.small(choice.pid.to_string());
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Min),
+                                        |ui| {
+                                            if ui.button("Choose").clicked() {
+                                                pid_to_open = Some(choice.pid);
+                                            }
+                                        },
+                                    );
+                                });
+                            });
+                        }
+                    });
+                });
+
+                if let Some(pid) = pid_to_open {
+                    self.state.open_target(pid);
                 }
             }
             AppState::TargetOpened {
