@@ -137,9 +137,10 @@ struct App {
 }
 
 impl eframe::App for App {
-    fn logic(&mut self, _: &Context, _: &mut Frame) {
+    fn logic(&mut self, ctx: &Context, _: &mut Frame) {
         if let Some(rx) = &self.scan_progress_rx {
             if let AppState::Scanning(atom) = &mut self.state {
+                ctx.request_repaint();
                 for msg in rx.try_iter() {
                     match msg {
                         ScanProgressMessage::Progressed(p) => {
@@ -255,6 +256,7 @@ impl eframe::App for App {
                 let progress = progress.load(Ordering::Relaxed) as f32 / 100.0;
                 ui.strong("Scanning...");
                 ui.add(egui::ProgressBar::new(progress));
+                ui.request_repaint();
             }
             AppState::FoundAddresses(addrs) => {
                 let mut should_reset = false;
